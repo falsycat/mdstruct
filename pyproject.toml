@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mdstruct"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "pyyaml",
+    "mistletoe",
+    "jsonschema",
+    "click",
+    "rich",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.scripts]
+mdstruct = "mdstruct.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mdstruct"]

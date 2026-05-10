@@ -1,0 +1,40 @@
+version: "1.0"
+root:
+  frontmatter:
+    required: false
+    schema:
+      type: object
+      properties:
+        author:
+          type: string
+      required: [author]
+  children:
+    - type: section
+      title: "Overview"
+      required: true
+      children:
+        - type: text
+          name: overview
+
+    - type: section
+      title:
+        pattern: 'Chapter (?P<num>\d+)'
+        capture: chapter_title
+      name: chapters
+      required: false
+      repeat:
+        min: 1
+        max: null
+      children:
+        - type: text
+          name: body
+          required: false
+        - type: table
+          name: data
+          required: false
+          columns:
+            - header: "Name"
+              name: item_name
+            - header: "Value"
+              name: item_value
+              pattern: '\d+'
