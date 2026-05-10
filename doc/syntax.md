@@ -26,7 +26,7 @@ root:
 
 ## Node types
 
-Every node in `children` (and nested `children`) has a `type` field. The following types are available:
+Each node in `children` (including nested `children`) has a `type` field:
 
 | type           | Matches                                    | Extracted as                         |
 |----------------|--------------------------------------------|--------------------------------------|
@@ -38,8 +38,7 @@ Every node in `children` (and nested `children`) has a `type` field. The followi
 | `table`        | Markdown table                             | `list[dict]`                         |
 | `code`         | Fenced or indented code block              | `{language, content}`                |
 | `blockquote`   | Block quote (`>`)                          | `str`, `tuple`, or `dict`            |
-| `thematic_break` | Horizontal rule (`---`, `***`, `___`)    | presence check only                  |
-| `frontmatter`  | YAML front matter (`---` block)            | per-field values                     |
+| `thematic_break` | Horizontal rule (`---`, `***`, `___`)    | `str` (raw text) when `name` is set  |
 
 ---
 
@@ -49,7 +48,7 @@ These parameters apply to every node type unless noted otherwise.
 
 | Parameter  | Type   | Default | Description                                                  |
 |------------|--------|---------|--------------------------------------------------------------|
-| `name`     | string | null    | Key name in the extracted output. Omit to discard.          |
+| `name`     | string | null    | Key name in the extracted output. Omit to discard. Required when `repeat` is set. |
 | `required` | bool   | `true`  | Whether a missing element is a validation error.            |
 | `repeat`   | object | null    | Allow the node to appear multiple times (see below).        |
 
@@ -61,13 +60,13 @@ repeat:
   max: null   # maximum occurrences; null = unlimited
 ```
 
-When `repeat` is set, the extracted value for this node becomes a **list** instead of a single item.
+When `repeat` is set, the extracted value becomes a **list** instead of a single item. `name` is required on any repeating node; omitting it is a schema error.
 
 ---
 
 ## `section`
 
-Matches a Markdown heading. The heading level is inferred from the nesting depth in the schema: sections directly under `root.children` match `h1`, sections nested one level deeper match `h2`, and so on. There is no `level` parameter.
+Matches a Markdown heading. The heading level is inferred from nesting depth: sections directly under `root.children` match `h1`, one level deeper matches `h2`, and so on. There is no `level` parameter.
 
 ```yaml
 - type: section
@@ -85,9 +84,11 @@ Matches a Markdown heading. The heading level is inferred from the nesting depth
 | Parameter     | Type             | Default | Description                                             |
 |---------------|------------------|---------|---------------------------------------------------------|
 | `title`       | string or object | —       | Title match rule (see below)                            |
-| `ordered`     | bool             | `true`  | Shorthand: whether children must appear in schema order |
-| `allow_extra` | bool             | `false` | Shorthand: whether extra children are allowed           |
+| `ordered`     | bool             | `true`  | Whether children must appear in schema order            |
+| `allow_extra` | bool             | `false` | Whether extra children are allowed                      |
 | `children`    | list             | `[]`    | Child schema nodes                                      |
+
+`ordered` and `allow_extra` on a `section` are shorthand for wrapping `children` in an implicit `group`. The matching rules are the same as described in [`group`](#group).
 
 ### Title matching
 
@@ -96,16 +97,36 @@ title: "Exact Title"           # literal string match
 
 title:
   pattern: 'Chapter \d+'       # regex match against heading text
-  capture: chapter_title       # extract full match under this key name
+  capture: chapter_title       # key name for the extracted value (see below)
 ```
 
-When `repeat` is used on a section, extracted results are collected into a list under the `name` key (or the snake_case title if `name` is omitted).
+The value stored under `capture` follows the same capture group rules as `pattern` elsewhere:
+
+| `pattern` form          | Value stored under `capture`                  |
+|-------------------------|-----------------------------------------------|
+| No capture groups       | Full match string                             |
+| Unnamed groups `(...)`  | `tuple` of group values                       |
+| Named groups `(?P<>…)`  | `dict` of named group values                  |
+
+When `repeat` is used on a section, extracted results are collected into a list under the `name` key (`name` is required; see [Common parameters](#common-parameters)).
 
 ```yaml
-# Extracted as: {"_title": "Chapter 1", "chapter_title": "Chapter 1", ...}
+# pattern has no capture groups → capture stores the full match string
+# Extracted as: {"chapter_title": "Chapter 1", ...}
 - type: section
   title:
     pattern: 'Chapter \d+'
+    capture: chapter_title
+  name: chapters
+  repeat:
+    min: 0
+    max: null
+
+# pattern has a named group → capture stores a dict
+# Extracted as: {"chapter_title": {"num": "1"}, ...}
+- type: section
+  title:
+    pattern: 'Chapter (?P<num>\d+)'
     capture: chapter_title
   name: chapters
   repeat:
@@ -174,7 +195,7 @@ Matches a paragraph block.
 
 ### Extraction type
 
-Determined by capture groups in `pattern` (see [Pattern capture groups](#pattern-capture-groups)).
+Determined by capture groups in `pattern` (see [Pattern capture groups](#pattern-capture-groups-and-type-coercion)).
 
 ---
 
@@ -186,7 +207,7 @@ Matches a bullet (`-`, `*`, `+`) or numbered (`1.`) list.
 - type: list
   name: items
   required: false
-  ordered: false    # true = numbered list required, false = bullet required, null = either
+  numbered: false   # true = numbered list, false = bullet, null = either
   item:
     pattern: '(?P<key>[^:]+):\s*(?P<value>.+)'
     children:       # optional nested list schema
@@ -199,7 +220,8 @@ Matches a bullet (`-`, `*`, `+`) or numbered (`1.`) list.
 
 | Parameter      | Type    | Default | Description                                               |
 |----------------|---------|---------|-----------------------------------------------------------|
-| `ordered`      | bool    | null    | `true` = numbered list, `false` = bullet, `null` = either |
+| `numbered`     | bool    | null    | `true` = numbered list, `false` = bullet, `null` = either |
+| `item`         | object  | null    | Optional item schema.                                     |
 | `item.pattern` | string  | null    | Regex matched against each item's plain text.             |
 | `item.children`| list    | null    | Schema for nested lists under each item.                  |
 
@@ -207,14 +229,14 @@ Matches a bullet (`-`, `*`, `+`) or numbered (`1.`) list.
 
 When `item.children` is present, each item is extracted as a **dict**:
 
-| Field       | Content                                                          |
-|-------------|------------------------------------------------------------------|
-| `_text`     | Raw item text (always present)                                   |
-| named groups | Named capture groups from `pattern`, merged into the dict       |
-| `_groups`   | Unnamed capture groups as a tuple (only when no named groups)    |
-| child names | Results from matching `item.children`                            |
+| Field            | Content                                                          |
+|------------------|------------------------------------------------------------------|
+| `_text`          | Raw item text (always present)                                   |
+| `<group_name>`   | Named capture groups from `pattern`, merged into the dict        |
+| `_groups`        | Unnamed capture groups as a tuple (only when no named groups)    |
+| `<child.name>`   | Extracted value for each named child node in `item.children`     |
 
-When `item.children` is absent, the extraction type follows the [capture group rules](#pattern-capture-groups).
+When `item.children` is absent, the extraction type follows the [capture group rules](#pattern-capture-groups-and-type-coercion).
 
 ---
 
@@ -228,9 +250,30 @@ Matches a GFM task list (items starting with `[ ]` or `[x]`).
   required: false
   item:
     pattern: '.+'
+    children:       # optional nested list schema
+      - type: list
+        name: subitems
+        required: false
+        item:
+          pattern: '.+'
 ```
 
+| Parameter       | Type   | Default | Description                                                 |
+|-----------------|--------|---------|-------------------------------------------------------------|
+| `item`          | object | null    | Optional item schema.                                       |
+| `item.pattern`  | string | null    | Regex matched against each item's plain text.               |
+| `item.children` | list   | null    | Schema for nested lists under each item (same as `list`).   |
+
 Each item is always extracted as `{"text": str, "checked": bool}`.
+
+When `item.children` is present, each item is extracted as a **dict** instead:
+
+| Field            | Content                                                          |
+|------------------|------------------------------------------------------------------|
+| `_text`          | Raw item text (always present)                                   |
+| `<group_name>`   | Named capture groups from `pattern`, merged into the dict        |
+| `_groups`        | Unnamed capture groups as a tuple (only when no named groups)    |
+| `<child.name>`   | Extracted value for each named child node in `item.children`     |
 
 ---
 
@@ -255,7 +298,7 @@ Matches a Markdown pipe table.
 | `columns`         | list   | `[]`    | Expected column definitions.                      |
 | `columns[].header`| string | —       | Exact column header text.                         |
 | `columns[].name`  | string | —       | Key name in extracted row dicts.                  |
-| `columns[].pattern`| string| null   | Regex validated against each cell value.          |
+| `columns[].pattern`| string or object | null | Regex (or [pattern object with `types`](#pattern-capture-groups-and-type-coercion)) validated against each cell value. |
 
 Extraction: `list[dict]` — one dict per row, keyed by column `name`.
 
@@ -287,7 +330,7 @@ Matches a block quote (`> ...`).
   pattern: 'NOTE:.*'
 ```
 
-Extraction type follows the [capture group rules](#pattern-capture-groups) applied to the quote's plain text.
+Extraction type follows the [capture group rules](#pattern-capture-groups-and-type-coercion) applied to the quote's plain text.
 
 ---
 
@@ -297,10 +340,11 @@ Matches a horizontal rule (`---`, `***`, `___`).
 
 ```yaml
 - type: thematic_break
+  name: divider   # optional; if set, raw text (e.g. "---") is extracted
   required: false
 ```
 
-No data is extracted; this node is used only for structural validation.
+When `name` is set, the raw text of the horizontal rule (e.g. `---`, `***`, or `___`) is extracted as a `str`. When `name` is omitted, no data is extracted and the node is used only for structural validation.
 
 ---
 
@@ -354,7 +398,7 @@ pattern:
   types: ...      # optional – coerce extracted value(s) to the given type(s)
 ```
 
-Both `regex` and `types` are optional. Using the object form without `regex` is the canonical way to add type coercion to a node that does not need regex validation.
+Both fields are optional. Omitting `regex` is the canonical way to add type coercion without regex validation.
 
 ### Capture groups and output shape
 
@@ -365,7 +409,9 @@ The presence and kind of capture groups in `regex` determines the **shape** of t
 | No capture groups              | single value        | `'\d{4}-\d{2}-\d{2}'`                   |
 | Unnamed groups `(...)`         | `tuple`             | `'v(\d+)\.(\d+)\.(\d+)'`               |
 | Named groups `(?P<name>...)`   | `dict`              | `'(?P<y>\d{4})-(?P<m>\d{2})'`          |
-| Mixed (named + unnamed)        | `dict` (named only) | unnamed groups are ignored               |
+| Mixed (named + unnamed)        | — (schema error)    | mixing named and unnamed groups is invalid |
+
+> **Error:** Mixing named and unnamed capture groups in the same `regex` is a schema error. Use either all named groups (`(?P<name>...)`) or all unnamed groups (`(...)`).
 
 ### `types` — type coercion
 
@@ -384,7 +430,7 @@ Supported type names:
 | `str`   | `str`       | Default. No-op.                                |
 | `int`   | `int`       | `int(value)`                                   |
 | `float` | `float`     | `float(value)`                                 |
-| `bool`  | `bool`      | `"true"/"yes"/"1"` → `True`; others → `False` |
+| `bool`  | `bool`      | Case-insensitive. `true`/`yes`/`y`/`t`/`1` → `True`; `false`/`no`/`n`/`f`/`0` → `False` |
 | `json`  | any         | `json.loads(value)`                            |
 
 ### Examples
@@ -463,7 +509,6 @@ Given the schema below and a matching document, `extract()` returns:
   # repeat section → list of dicts
   "chapters": [
     {
-      "_title": "Chapter 1",
       "chapter_title": "Chapter 1",   # from title.capture
 
       # named group → dict for each table column
@@ -481,13 +526,13 @@ Given the schema below and a matching document, `extract()` returns:
       "named_items": [{"key": "foo", "value": "bar"}],
 
       # nested list (item.children present) → list[dict]
-      "todo_list": [
+      "entries": [
         {
-          "_text": "Task A",
-          "title": "Task A",
-          "subtasks": [
-            {"done": "[x]", "task": "step 1"},
-            {"done": "[ ]", "task": "step 2"},
+          "_text": "Alice",
+          "name": "Alice",
+          "scores": [
+            {"label": "math", "value": "90"},
+            {"label": "english", "value": "85"},
           ],
         },
       ],

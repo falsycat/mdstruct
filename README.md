@@ -9,7 +9,7 @@ Define the structure of a Markdown document as a YAML schema, then **validate** 
 - **Flexible matching** — control whether children must appear in order, whether extra elements are allowed, and whether sections may repeat.
 - **Regex patterns with capture groups** — validate content with regular expressions and extract named or positional capture groups directly into the output.
 - **Nested lists** — describe arbitrarily deep list structures in the schema.
-- **All common Markdown elements** — sections, paragraphs, bullet/numbered lists, task lists, tables, code blocks, block quotes, horizontal rules, and YAML front matter.
+- **All common Markdown elements** — sections, paragraphs, bullet and numbered lists, task lists, tables, code blocks, block quotes, horizontal rules, and YAML front matter.
 - **Python library + CLI** — use programmatically or from the terminal.
 
 ---
@@ -34,9 +34,12 @@ version: "1.0"
 root:
   frontmatter:
     required: false
-    fields:
-      - key: author
-        name: author
+    schema:
+      type: object
+      properties:
+        author:
+          type: string
+      required: [author]
   children:
     - type: section
       title: "Overview"
@@ -47,8 +50,9 @@ root:
 
     - type: section
       title:
-        pattern: 'Chapter \d+'
+        pattern: 'Chapter (?P<num>\d+)'
         capture: chapter_title
+      name: chapters
       required: false
       repeat:
         min: 1
@@ -90,8 +94,8 @@ mdstruct extract schema.yaml document.md
 ```yaml
 author: Alice
 chapters:
-  - _title: Chapter 1
-    chapter_title: Chapter 1
+  - chapter_title:
+      num: "1"
     body: This chapter covers the basics.
     data:
       - item_name: Alpha
@@ -104,15 +108,15 @@ Use `--format json` for JSON output.
 
 ## CLI reference
 
-```
+```text
 mdstruct validate <schema> <document> [--format text|json]
 mdstruct extract  <schema> <document> [--format yaml|json]
 ```
 
-| Option     | Default  | Description                                  |
-|------------|----------|----------------------------------------------|
-| `--format` | `text`   | Output format for `validate`                 |
-| `--format` | `yaml`   | Output format for `extract`                  |
+| Command    | Option     | Default  | Description         |
+|------------|------------|----------|---------------------|
+| `validate` | `--format` | `text`   | `text` or `json`    |
+| `extract`  | `--format` | `yaml`   | `yaml` or `json`    |
 
 ---
 
