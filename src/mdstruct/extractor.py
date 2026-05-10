@@ -396,17 +396,20 @@ def _extract_thematic_break(schema: SchThematicBreak, ast_node: AstNode) -> str 
 def _coerce(value: str, type_name: str) -> Any:
     if type_name == "str":
         return value
-    if type_name == "int":
-        return int(value)
-    if type_name == "float":
-        return float(value)
-    if type_name == "bool":
-        low = value.lower()
-        if low in ("true", "yes", "y", "t", "1"):
-            return True
-        if low in ("false", "no", "n", "f", "0"):
-            return False
-        raise ValueError(f"Cannot coerce {value!r} to bool")
-    if type_name == "json":
-        return json.loads(value)
+    try:
+        if type_name == "int":
+            return int(value)
+        if type_name == "float":
+            return float(value)
+        if type_name == "bool":
+            low = value.lower()
+            if low in ("true", "yes", "y", "t", "1"):
+                return True
+            if low in ("false", "no", "n", "f", "0"):
+                return False
+            raise ValueError(f"cannot coerce {value!r} to bool")
+        if type_name == "json":
+            return json.loads(value)
+    except (ValueError, json.JSONDecodeError) as e:
+        raise ExtractionError(f"type coercion failed: cannot convert '{value}' to {type_name}: {e}") from e
     return value

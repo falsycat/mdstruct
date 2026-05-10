@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -9,6 +10,9 @@ TypeName = Literal["str", "int", "float", "bool", "json"]
 
 
 class PatternSpec(BaseModel):
+    # NOTE: regex comes from user-supplied schema files. Catastrophic backtracking
+    # (ReDoS) is possible if untrusted parties can provide schema files. Mitigate by
+    # running in a sandboxed process or switching to the `regex` package with timeout=.
     regex: str | None = None
     types: TypeName | list[TypeName] | dict[str, TypeName] | None = None
 
@@ -18,6 +22,15 @@ class PatternSpec(BaseModel):
         if isinstance(value, str):
             return {"regex": value}
         return value
+
+    @model_validator(mode="after")
+    def _validate_regex(self) -> "PatternSpec":
+        if self.regex is not None:
+            try:
+                re.compile(self.regex)
+            except re.error as e:
+                raise ValueError(f"invalid regex pattern: {e}") from e
+        return self
 
 
 PatternField = str | PatternSpec

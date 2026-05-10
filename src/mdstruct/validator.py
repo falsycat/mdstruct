@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 
@@ -78,9 +79,31 @@ def _validate_frontmatter(
             ))
 
 
+def _try_coerce(value: str | None, type_name: str) -> bool:
+    if value is None or type_name == "str":
+        return True
+    try:
+        if type_name == "int":
+            int(value)
+        elif type_name == "float":
+            float(value)
+        elif type_name == "bool":
+            return value.lower() in ("true", "yes", "y", "t", "1", "false", "no", "n", "f", "0")
+        elif type_name == "json":
+            json.loads(value)
+        return True
+    except (ValueError, json.JSONDecodeError):
+        return False
+
+
 def _check_pattern(spec: PatternSpec | None, text: str, path: str, line: int | None, errors: list[ValidationError]) -> bool:
     if spec is None:
         return True
+
+    named: dict[str, str] = {}
+    unnamed: tuple[str, ...] = ()
+    matched = text
+
     if spec.regex is not None:
         m = re.fullmatch(spec.regex, text)
         if not m:
@@ -91,7 +114,39 @@ def _check_pattern(spec: PatternSpec | None, text: str, path: str, line: int | N
                 line=line,
             ))
             return False
-    return True
+        named = m.groupdict()
+        unnamed = m.groups()
+        matched = m.group(0)
+
+    if spec.types is None:
+        return True
+
+    ok = True
+    if named and isinstance(spec.types, dict):
+        for k, v in named.items():
+            t = spec.types.get(k, "str")
+            if not _try_coerce(v, t):
+                errors.append(ValidationError(path=path, error_type="type_error",
+                    message=f"cannot coerce '{v}' to {t} (field '{k}')", line=line))
+                ok = False
+    elif unnamed:
+        if isinstance(spec.types, list):
+            types_list: list[str] = spec.types
+        elif isinstance(spec.types, str):
+            types_list = [spec.types] * len(unnamed)
+        else:
+            types_list = []
+        for v, t in zip(unnamed, types_list):
+            if not _try_coerce(v, t):
+                errors.append(ValidationError(path=path, error_type="type_error",
+                    message=f"cannot coerce '{v}' to {t}", line=line))
+                ok = False
+    elif isinstance(spec.types, str):
+        if not _try_coerce(matched, spec.types):
+            errors.append(ValidationError(path=path, error_type="type_error",
+                message=f"cannot coerce '{matched}' to {spec.types}", line=line))
+            ok = False
+    return ok
 
 
 def _node_matches_schema(ast_node: AstNode, schema_node: NodeSchema) -> bool:
