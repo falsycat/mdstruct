@@ -2,7 +2,7 @@
 
 ## Overview
 
-mdstruct has three logical stages that run in sequence:
+mdstruct processes a Markdown document in three sequential stages:
 
 ```
 YAML schema file
@@ -19,6 +19,10 @@ YAML schema file
       ▼
  ValidationError list / extracted dict
 ```
+
+1. **Schema loader** — reads `schema.yaml` and validates it into a typed Pydantic model tree.
+2. **Markdown parser** — converts the document into an internal section-tree AST.
+3. **Validator / Extractor** — walks the schema and AST in tandem to produce errors or extract data.
 
 ---
 
@@ -56,36 +60,43 @@ mdstruct/
 
 ### `schema/models.py`
 
-Pydantic v2 models that represent every schema node type.  
-All nodes share a base with `name`, `required`, and `repeat`.
+Pydantic v2 models that represent every schema node type. All nodes share `name`, `required`, and `repeat`. The following are schema errors detected at load time:
+
+- `required` and `repeat` set on the same node.
+- `name` omitted on a node that has `repeat`.
+- Two nodes in the same output scope share the same `name` — including names introduced by merging an unnamed `group` into its parent.
+
+#### Building blocks
+
+Shared types used across multiple node models.
 
 ```python
-# ── type coercion ────────────────────────────────────────
 TypeName = Literal["str", "int", "float", "bool", "json"]
 
-# pattern field: string shorthand or object with regex + types
 class PatternSpec(BaseModel):
     regex: str | None = None
     # types matches the capture-group shape:
-    #   single value  → TypeName
+    #   single value   → TypeName
     #   unnamed groups → list[TypeName]
     #   named groups   → dict[str, TypeName]
     types: TypeName | list[TypeName] | dict[str, TypeName] | None = None
 
+    @model_validator(mode="before")
     @classmethod
-    def __get_validators__(cls):
-        # also accept a plain string (shorthand for PatternSpec(regex=value))
-        ...
+    def _coerce_from_string(cls, value: Any) -> Any:
+        # accept a plain string as shorthand for PatternSpec(regex=value)
+        if isinstance(value, str):
+            return {"regex": value}
+        return value
 
-PatternField = str | PatternSpec   # the actual type used in node models
+PatternField = str | PatternSpec   # used as the field type in node models
 
-# ── schema building blocks ───────────────────────────────
 class RepeatSpec(BaseModel):
     min: int = 0
     max: int | None = None
 
 class TitleMatch(BaseModel):
-    pattern: str
+    pattern: PatternField   # str | PatternSpec — supports regex + optional types
     capture: str | None = None
 
 class ColumnSchema(BaseModel):
@@ -101,8 +112,11 @@ class FrontmatterSchema(BaseModel):
     required: bool = False
     name: str | None = None   # if set, extracted under this key; else merged into root
     schema_: dict | None = Field(None, alias="schema")  # JSON Schema (Draft 7)
+```
 
-# ── leaf nodes ──────────────────────────────────────────
+#### Leaf nodes
+
+```python
 class TextNode(BaseModel):
     type: Literal["text"]
     name: str | None = None
@@ -115,14 +129,7 @@ class ListNode(BaseModel):
     name: str | None = None
     required: bool = True
     repeat: RepeatSpec | None = None
-    ordered: bool | None = None   # None = either
-    item: ItemSchema = ItemSchema()
-
-class TaskListNode(BaseModel):
-    type: Literal["task_list"]
-    name: str | None = None
-    required: bool = True
-    repeat: RepeatSpec | None = None
+    numbered: bool | None = None   # None = either
     item: ItemSchema = ItemSchema()
 
 class TableNode(BaseModel):
@@ -148,9 +155,14 @@ class BlockquoteNode(BaseModel):
 
 class ThematicBreakNode(BaseModel):
     type: Literal["thematic_break"]
-    required: bool = False
+    name: str | None = None
+    required: bool = True
+    repeat: RepeatSpec | None = None
+```
 
-# ── container nodes ─────────────────────────────────────
+#### Container nodes
+
+```python
 class GroupNode(BaseModel):
     type: Literal["group"]
     name: str | None = None
@@ -170,21 +182,27 @@ class SectionNode(BaseModel):
     ordered: bool = True        # shorthand for implicit group over children
     allow_extra: bool = False
     children: list["NodeSchema"] = []
+```
 
+#### Schema root
+
+```python
 NodeSchema = Annotated[
-    TextNode | ListNode | TaskListNode | TableNode | CodeNode |
+    TextNode | ListNode | TableNode | CodeNode |
     BlockquoteNode | ThematicBreakNode | GroupNode | SectionNode,
     Field(discriminator="type"),
 ]
 
 class RootSchema(BaseModel):
     frontmatter: FrontmatterSchema | None = None
-    children: list[NodeSchema] = []
+    children: list[NodeSchema] = []   # optional in YAML; defaults to empty list
 
 class Schema(BaseModel):
     version: str
     root: RootSchema
 ```
+
+`RootSchema` has no `ordered` or `allow_extra` fields. Root-level children are always matched with `ordered=true, allow_extra=false` (strict sequential). This cannot be changed; use a top-level `group` node if flexibility is needed.
 
 ### `schema/loader.py`
 
@@ -201,9 +219,13 @@ def load_schema(path: str | Path) -> Schema:
 
 ## Markdown parser (`md_parser.py`)
 
-Converts a Markdown document into an **internal section tree** using `mistletoe`.
+Converts a Markdown document into an internal section tree using `mistletoe`.
 
 ### Internal AST nodes
+
+The AST has two kinds of nodes: **structural** (document root and sections) and **content** (everything else).
+
+> **Naming note:** Several AST dataclass names here — `TextNode`, `ListNode`, `TableNode`, `CodeNode`, `BlockquoteNode`, `ThematicBreakNode`, and `SectionNode` — also appear as Pydantic models in `schema/models.py`. They are distinct types in different namespaces; the AST dataclasses carry parsed document data, while the schema models carry schema declarations.
 
 ```python
 @dataclass
@@ -212,13 +234,16 @@ class DocumentNode:
     children: list[SectionNode | ContentNode]
 
 @dataclass
-class SectionNode:
+class SectionNode:    # AST dataclass — distinct from schema.models.SectionNode
     level: int
     title: str
     line: int
     children: list[SectionNode | ContentNode]
+```
 
-# ── content nodes ────────────────────────────────────────
+Content nodes appear as direct children of `DocumentNode` or `SectionNode`:
+
+```python
 @dataclass
 class TextNode:
     text: str       # plain text, Markdown stripped
@@ -234,17 +259,6 @@ class ListItemNode:
 class ListNode:
     ordered: bool
     items: list[ListItemNode]
-    line: int
-
-@dataclass
-class TaskItem:
-    text: str
-    checked: bool
-    line: int
-
-@dataclass
-class TaskListNode:
-    items: list[TaskItem]
     line: int
 
 @dataclass
@@ -266,7 +280,13 @@ class BlockquoteNode:
 
 @dataclass
 class ThematicBreakNode:
+    raw: str        # raw text, e.g. "---", "***", "___"
     line: int
+
+ContentNode = (
+    TextNode | ListNode | TableNode |
+    CodeNode | BlockquoteNode | ThematicBreakNode
+)
 ```
 
 ### Parsing strategy
@@ -274,7 +294,6 @@ class ThematicBreakNode:
 1. `mistletoe` tokenises the Markdown into a flat token list.
 2. YAML front matter (if present) is stripped before tokenisation and parsed separately with `pyyaml`.
 3. The flat token list is converted into a **section tree**: whenever a `Heading` token is encountered, a new `SectionNode` is opened. Subsequent content tokens become children until a heading of equal or higher level is seen. The `SectionNode.level` field stores the actual heading level read from the document (`#` = 1, `##` = 2, …).
-4. Task lists are detected by scanning list item text for the `[ ]` / `[x]` prefix; if all items in a list qualify, the list becomes a `TaskListNode`.
 
 ### Heading level inference
 
@@ -284,7 +303,7 @@ The schema has no `level` field on `section` nodes. Instead, the validator deriv
 - their `children` sections → expected level 2
 - and so on recursively
 
-During validation, the AST `SectionNode.level` is compared against this derived expected level. A mismatch produces a `title_mismatch` error.
+During validation, the AST `SectionNode.level` is compared against this derived expected level. A mismatch produces a `level_mismatch` error.
 
 ---
 
@@ -303,38 +322,31 @@ class ValidationError:
     line: int | None
 ```
 
-| `error_type`          | Meaning                                              |
-|-----------------------|------------------------------------------------------|
-| `missing_element`     | A `required=true` node has no matching AST element   |
-| `pattern_mismatch`    | Text / cell / item did not match `pattern`           |
-| `unexpected_element`  | An AST element has no schema match (`allow_extra=false`) |
-| `wrong_type`          | AST element type does not match schema node type     |
-| `repeat_underflow`    | Repeat count below `min`                             |
-| `repeat_overflow`     | Repeat count above `max`                             |
-| `missing_column`      | Table column header not found                        |
-| `wrong_language`      | Code block language does not match schema            |
-| `missing_field`       | Required front matter field absent                   |
-| `title_mismatch`      | Section heading did not match title pattern/string   |
+| `error_type`          | Meaning                                                          |
+|-----------------------|------------------------------------------------------------------|
+| `missing_element`     | A `required=true` node has no matching AST element              |
+| `pattern_mismatch`    | Text / cell / item did not match `pattern`                       |
+| `type_coercion_error` | Captured value could not be converted to the declared `types`    |
+| `unexpected_element`  | An AST element has no schema match (`allow_extra=false`)         |
+| `wrong_type`          | AST element type does not match schema node type                 |
+| `repeat_underflow`    | Repeat count below `min`                                         |
+| `repeat_overflow`     | Repeat count above `max`                                         |
+| `missing_column`      | Table column header not found                                    |
+| `wrong_language`      | Code block language does not match schema                        |
+| `missing_field`       | Required front matter field absent (`line=None`)                 |
+| `title_mismatch`      | Section heading text did not match expected title pattern/string |
+| `level_mismatch`      | Section heading level did not match the depth-inferred expected level |
 
 ### Group matching algorithm
 
 The core of validation is `match_group`, which handles all four `ordered × allow_extra` combinations:
 
-```
-match_group(schema_children, doc_nodes, ordered, allow_extra):
-
-  ordered=true,  allow_extra=false  →  strict 1-to-1 sequential match
-  ordered=true,  allow_extra=true   →  schema children form a queue;
-                                       doc_nodes are scanned left to right;
-                                       unrecognised nodes are skipped;
-                                       remaining required schema nodes → error
-  ordered=false, allow_extra=true   →  for each schema child, scan all doc_nodes
-                                       for a first match; required + not found → error
-  ordered=false, allow_extra=false  →  bipartite matching: every doc_node must
-                                       match exactly one schema child;
-                                       unmatched doc_nodes or required unmatched
-                                       schema children → error
-```
+| `ordered` | `allow_extra` | Matching behaviour                                                                                                                          |
+|-----------|---------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `true`    | `false`       | Strict 1-to-1 sequential match. Extra elements cause an error. **(default)**                                                                |
+| `true`    | `true`        | Schema children form a queue; doc nodes are scanned left to right; unrecognised nodes are skipped; remaining required schema nodes → error. |
+| `false`   | `false`       | All schema children must be present in any order, with no extra doc elements allowed. Unmatched doc nodes → `unexpected_element`; missing required schema children → `missing_element`. |
+| `false`   | `true`        | For each schema child, scan all doc nodes for a first match; required + not found → error.                                                  |
 
 `SectionNode.ordered` / `SectionNode.allow_extra` are shorthands that apply the same logic to the section's `children` list.
 
@@ -342,59 +354,25 @@ match_group(schema_children, doc_nodes, ordered, allow_extra):
 
 ## Extractor (`extractor.py`)
 
-Runs after validation (or independently). Traverses the same schema + AST pair and builds a nested dict.
+Runs after validation. Traverses the same schema + AST pair and builds a nested dict. Assumes the document has already been validated; if called on an invalid document, it raises `ExtractionError` without reporting details. Always run `validate()` first and check for errors before calling `extract()`.
 
 ### Extraction rules by node type
 
-| Schema node    | AST node(s)     | Extracted value                                        |
-|----------------|-----------------|--------------------------------------------------------|
-| `section`      | `SectionNode`   | dict of children's results; list when `repeat` set     |
-| `group`        | *(none)*        | dict of children (if named), or merged into parent     |
-| `text`         | `TextNode`      | `str`, `tuple`, or `dict` (see capture group rules)    |
-| `list`         | `ListNode`      | `list[str \| tuple \| dict]`                           |
-| `task_list`    | `TaskListNode`  | `list[{"text": str, "checked": bool}]`                 |
-| `table`        | `TableNode`     | `list[dict]` — one dict per row                        |
-| `code`         | `CodeNode`      | `{"language": str \| None, "content": str}`            |
-| `blockquote`   | `BlockquoteNode`| `str`, `tuple`, or `dict` (capture group rules)        |
-| `thematic_break`| `ThematicBreakNode` | not extracted                                     |
-| `frontmatter`  | *(doc root)*    | raw dict; merged into root (or under `name` if set)    |
+| Schema node      | AST node(s)         | Extracted value                                              |
+|------------------|---------------------|--------------------------------------------------------------|
+| `section`        | `SectionNode`       | dict of children's results; list when `repeat` set           |
+| `group`          | *(none)*            | dict (named) or flat into parent scope                       |
+| `text`           | `TextNode`          | `str`, `tuple`, or `dict` (see pattern capture group rules)  |
+| `list`           | `ListNode`          | `list[str \| tuple \| dict]`                                 |
+| `table`          | `TableNode`         | `list[dict]` — one dict per row                              |
+| `code`           | `CodeNode`          | `{"language": str \| None, "content": str}`                  |
+| `blockquote`     | `BlockquoteNode`    | `str`, `tuple`, or `dict` (capture group rules)              |
+| `thematic_break` | `ThematicBreakNode` | `str` (raw text) when `name` is set; otherwise not extracted |
+| `frontmatter`    | *(doc root)*        | raw dict; merged into root (or under `name` if set)          |
 
-### Pattern resolution
+Pattern resolution and capture group rules are described in [syntax.md — Pattern capture groups and type coercion](syntax.md#pattern-capture-groups-and-type-coercion). When `item.children` is defined on a `list` node, per-item extraction keys are described in [syntax.md — Nested lists](syntax.md#nested-lists).
 
-`PatternField` is resolved at extraction time as follows:
-
-1. If `pattern` is a plain string, treat it as `PatternSpec(regex=pattern, types=None)`.
-2. Apply `regex` (if present) to the text; fail validation if no match.
-3. Determine the **shape** from the capture groups in `regex`:
-   - No groups → single value (the full match, or the full text if no `regex`)
-   - Unnamed groups → `tuple`
-   - Named groups → `dict`
-4. Apply `types` coercion element-by-element to the captured strings.
-
-| `regex` groups    | `types` form        | Final Python type           |
-|-------------------|---------------------|-----------------------------|
-| None              | `None`              | `str`                       |
-| None              | `"int"`             | `int`                       |
-| Unnamed           | `None`              | `tuple[str, ...]`           |
-| Unnamed           | `[int, float]`      | `tuple[int, float]`         |
-| Named             | `None`              | `dict[str, str]`            |
-| Named             | `{a: int, b: bool}` | `dict[str, int \| bool]`    |
-
-### Nested list items
-
-When `item.children` is defined, each list item is extracted as a dict:
-
-```python
-{
-  "_text":   str,         # raw item text
-  # named pattern groups merged in (or "_groups": tuple if unnamed)
-  "child_name": ...,      # results from item.children schemas
-}
-```
-
-### Repeat sections / groups
-
-When `repeat` is set on a `section` or `group`, all matched instances are collected into a list under the node's `name` key. The `name` defaults to the snake_case of the section title when omitted.
+When `repeat` is set on a `section` or `group`, all matched instances are collected into a list under the node's `name` key. `name` is required on any repeating node; omitting it is a schema error.
 
 ---
 
@@ -402,46 +380,48 @@ When `repeat` is set on a `section` or `group`, all matched instances are collec
 
 Built with [Click](https://click.palletsprojects.com/).
 
-### Commands
-
-```
-mdstruct validate <schema> <document> [--format text|json]
-mdstruct extract  <schema> <document> [--format yaml|json]
-```
-
-`validate` exits with code `0` on success, `1` when errors are found.  
-`extract` always exits `0` if parsing succeeds (validation is not enforced).
+`validate` exits with code `0` on success, `1` when errors are found.
+`extract` exits `0` on success, `1` if the document does not conform to the schema (no detail is shown).
 
 ### `validate` text output format
 
 ```
-ERROR  root > Section[Overview] (line 5): missing required element
+ERROR  root > section[Overview] (line 5): missing required element
 ERROR  root > Chapter 1 > table[results] > row 2 > col_count (line 23): pattern '\d+' not matched: 'N/A'
 Total: 2 error(s)
+```
+
+### `validate` JSON output format (`--format json`)
+
+```json
+{
+  "errors": [
+    {
+      "path": "root > section[Overview]",
+      "error_type": "missing_element",
+      "message": "missing required element",
+      "line": 5
+    },
+    {
+      "path": "root > Chapter 1 > table[results] > row 2 > col_count",
+      "error_type": "pattern_mismatch",
+      "message": "pattern '\\d+' not matched: 'N/A'",
+      "line": 23
+    }
+  ],
+  "total": 2
+}
 ```
 
 ---
 
 ## Dependencies
 
-| Package      | Purpose                                        |
-|--------------|------------------------------------------------|
-| `pydantic ≥2`| Schema model definition & validation           |
-| `pyyaml`     | YAML loading                                   |
-| `mistletoe`  | Markdown parsing                               |
-| `jsonschema` | Front matter validation via JSON Schema Draft 7|
-| `click`      | CLI framework                                  |
-| `rich`       | Formatted terminal output                      |
-
----
-
-## Implementation order
-
-1. `pyproject.toml` + package skeleton
-2. `schema/models.py` — Pydantic models
-3. `schema/loader.py` — YAML → model tree
-4. `md_parser.py` — Markdown → internal AST
-5. `validator.py` — validation logic
-6. `extractor.py` — extraction logic
-7. `cli.py` — CLI commands
-8. `tests/` — tests + fixtures
+| Package       | Purpose                                         |
+|---------------|-------------------------------------------------|
+| `pydantic ≥2` | Schema model definition & validation            |
+| `pyyaml`      | YAML loading                                    |
+| `mistletoe`   | Markdown parsing                                |
+| `jsonschema`  | Front matter validation via JSON Schema Draft 7 |
+| `click`       | CLI framework                                   |
+| `rich`        | Formatted terminal output                       |
