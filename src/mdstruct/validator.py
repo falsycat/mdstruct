@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 
 import jsonschema
 
 from .md_parser import (
-    BlockquoteNode, CodeNode, DocumentNode, ListNode, SectionNode,
+    AstNode, BlockquoteNode, CodeNode, DocumentNode, ListNode, SectionNode,
     TableNode, TextNode, ThematicBreakNode,
 )
 from .schema.models import (
@@ -17,7 +16,6 @@ from .schema.models import (
     GroupNode as SchGroup,
     ListNode as SchList,
     NodeSchema,
-    PatternField,
     PatternSpec,
     RootSchema,
     Schema,
@@ -26,9 +24,8 @@ from .schema.models import (
     TextNode as SchText,
     ThematicBreakNode as SchThematicBreak,
     TitleMatch,
+    resolve_pattern,
 )
-
-AstNode = SectionNode | TextNode | ListNode | TableNode | CodeNode | BlockquoteNode | ThematicBreakNode
 
 
 @dataclass
@@ -81,14 +78,6 @@ def _validate_frontmatter(
             ))
 
 
-def _resolve_pattern(pattern: PatternField | None) -> PatternSpec | None:
-    if pattern is None:
-        return None
-    if isinstance(pattern, str):
-        return PatternSpec(regex=pattern)
-    return pattern
-
-
 def _check_pattern(spec: PatternSpec | None, text: str, path: str, line: int | None, errors: list[ValidationError]) -> bool:
     if spec is None:
         return True
@@ -106,7 +95,6 @@ def _check_pattern(spec: PatternSpec | None, text: str, path: str, line: int | N
 
 
 def _node_matches_schema(ast_node: AstNode, schema_node: NodeSchema) -> bool:
-    """Return True if the ast_node *could* match schema_node (type-level check)."""
     if schema_node.type == "section":
         return isinstance(ast_node, SectionNode)
     if schema_node.type == "text":
@@ -122,7 +110,7 @@ def _node_matches_schema(ast_node: AstNode, schema_node: NodeSchema) -> bool:
     if schema_node.type == "thematic_break":
         return isinstance(ast_node, ThematicBreakNode)
     if schema_node.type == "group":
-        return True  # groups match any node via their children
+        return True
     return False
 
 
@@ -153,8 +141,6 @@ def _validate_node(
         _validate_blockquote(schema_node, ast_node, path, errors)
     elif t == "thematic_break":
         _validate_thematic_break(schema_node, ast_node, path, errors)
-    elif t == "group":
-        _validate_group_node(schema_node, ast_node, path, errors, expected_level)
 
 
 def _validate_section(
@@ -200,7 +186,7 @@ def _check_title(
                 line=ast_node.line,
             ))
     else:
-        spec = _resolve_pattern(title_spec.pattern)
+        spec = resolve_pattern(title_spec.pattern)
         if spec is not None and spec.regex is not None:
             m = re.fullmatch(spec.regex, ast_node.title)
             if not m:
@@ -217,7 +203,7 @@ def _validate_text(schema: SchText, ast_node: AstNode, path: str, errors: list[V
             message=f"expected text, got {_ast_type_name(ast_node)}", line=getattr(ast_node, "line", None)))
         return
     node_path = f"{path} > text[{schema.name or ''}]"
-    spec = _resolve_pattern(schema.pattern)
+    spec = resolve_pattern(schema.pattern)
     _check_pattern(spec, ast_node.text, node_path, ast_node.line, errors)
 
 
@@ -233,7 +219,7 @@ def _validate_list(schema: SchList, ast_node: AstNode, path: str, errors: list[V
         errors.append(ValidationError(path=node_path, error_type="wrong_type",
             message=f"expected {expected} list, got {actual}", line=ast_node.line))
         return
-    spec = _resolve_pattern(schema.item.pattern)
+    spec = resolve_pattern(schema.item.pattern)
     for i, item in enumerate(ast_node.items):
         item_path = f"{node_path} > item {i + 1}"
         _check_pattern(spec, item.text, item_path, item.line, errors)
@@ -270,7 +256,7 @@ def _validate_table(schema: SchTable, ast_node: AstNode, path: str, errors: list
             idx = header_index[col.header]
             cell = row[idx] if idx < len(row) else ""
             col_path = f"{node_path} > row {row_i + 1} > {col.name}"
-            spec = _resolve_pattern(col.pattern)
+            spec = resolve_pattern(col.pattern)
             _check_pattern(spec, cell, col_path, ast_node.line, errors)
 
 
@@ -292,7 +278,7 @@ def _validate_blockquote(schema: SchBlockquote, ast_node: AstNode, path: str, er
             message=f"expected blockquote, got {_ast_type_name(ast_node)}", line=getattr(ast_node, "line", None)))
         return
     node_path = f"{path} > blockquote[{schema.name or ''}]"
-    spec = _resolve_pattern(schema.pattern)
+    spec = resolve_pattern(schema.pattern)
     _check_pattern(spec, ast_node.text, node_path, ast_node.line, errors)
 
 
@@ -300,20 +286,6 @@ def _validate_thematic_break(schema: SchThematicBreak, ast_node: AstNode, path: 
     if not isinstance(ast_node, ThematicBreakNode):
         errors.append(ValidationError(path=path, error_type="wrong_type",
             message=f"expected thematic_break, got {_ast_type_name(ast_node)}", line=getattr(ast_node, "line", None)))
-
-
-def _validate_group_node(
-    schema: SchGroup,
-    ast_node: AstNode,
-    path: str,
-    errors: list[ValidationError],
-    expected_level: int,
-) -> None:
-    node_path = f"{path} > group[{schema.name or ''}]"
-    # group has no direct AST counterpart; validate children against the same ast children list
-    # This is only called when a group is directly matched to a single node — not the primary path.
-    # The primary path is _match_group_children called with the group's children.
-    pass
 
 
 def _match_group_children(
@@ -326,7 +298,6 @@ def _match_group_children(
     allow_extra: bool,
     expected_level: int,
 ) -> None:
-    # Expand group nodes (unnamed groups are flattened, named groups create a new scope)
     flat_schema = _expand_groups(schema_children, path, errors, expected_level)
     _do_match(flat_schema, ast_children, path, errors, ordered, allow_extra, expected_level)
 
@@ -337,7 +308,6 @@ def _expand_groups(
     errors: list[ValidationError],
     expected_level: int,
 ) -> list[tuple[NodeSchema, str, int]]:
-    """Return list of (schema_node, path, expected_level) with groups flattened."""
     result = []
     for node in schema_children:
         if node.type == "group":
@@ -349,10 +319,6 @@ def _expand_groups(
         else:
             result.append((node, path, expected_level))
     return result
-
-
-def _is_repeat_node(schema_node: NodeSchema) -> bool:
-    return getattr(schema_node, "repeat", None) is not None
 
 
 def _schema_node_required(schema_node: NodeSchema) -> bool:
@@ -375,10 +341,8 @@ def _do_match(
         _match_strict_sequential(flat_schema, ast_children, path, errors, expected_level)
     elif ordered and allow_extra:
         _match_ordered_skip(flat_schema, ast_children, path, errors, expected_level)
-    elif not ordered and not allow_extra:
-        _match_any_order_strict(flat_schema, ast_children, path, errors, expected_level)
     else:
-        _match_any_order_skip(flat_schema, ast_children, path, errors, expected_level)
+        _match_any_order(flat_schema, ast_children, path, errors, expected_level, allow_extra)
 
 
 def _get_section_display(ast_node: AstNode) -> str:
@@ -394,16 +358,12 @@ def _try_match_one(
     errors: list[ValidationError],
     expected_level: int,
 ) -> bool:
-    """Check if ast_node matches schema_node type (and for sections, title). Validate if matches."""
     if schema_node.type == "group":
-        # Named group: validate group's children against ast subtree's children
-        # This would be a section or similar container. For simplicity we skip.
         return False
 
     if not _node_matches_schema(ast_node, schema_node):
         return False
 
-    # For sections, also check title
     if schema_node.type == "section":
         assert isinstance(ast_node, SectionNode)
         title_spec = schema_node.title
@@ -411,13 +371,11 @@ def _try_match_one(
             if ast_node.title != title_spec:
                 return False
         else:
-            spec = _resolve_pattern(title_spec.pattern)
+            spec = resolve_pattern(title_spec.pattern)
             if spec is not None and spec.regex is not None:
                 if not re.fullmatch(spec.regex, ast_node.title):
                     return False
 
-    label = _get_section_display(ast_node)
-    node_path = f"{path} > {label}"
     _validate_node(schema_node, ast_node, path, errors, expected_level)
     return True
 
@@ -446,7 +404,6 @@ def _match_strict_sequential(
         sn, sp, slevel = flat_schema[si]
 
         if sn.type == "group" and sn.name:
-            # Named group — consume from ast_children for group's children
             inner = _expand_groups(sn.children, f"{path} > group[{sn.name}]", errors, slevel)
             repeat = getattr(sn, "repeat", None)
             if repeat is not None:
@@ -495,12 +452,8 @@ def _match_strict_sequential(
                     message="missing required element",
                     line=line,
                 ))
-            else:
-                # optional, skip schema node
-                pass
         si += 1
 
-    # Remaining required schema nodes
     while si < len(flat_schema):
         sn, sp, slevel = flat_schema[si]
         repeat = getattr(sn, "repeat", None)
@@ -520,7 +473,6 @@ def _match_strict_sequential(
             ))
         si += 1
 
-    # Remaining extra AST nodes
     while ai < len(ast_children):
         ast_node = ast_children[ai]
         errors.append(ValidationError(
@@ -590,7 +542,7 @@ def _match_ordered_skip(
                 else:
                     if count > 0:
                         break
-                    ai += 1  # skip unknown
+                    ai += 1
             if count < repeat.min:
                 errors.append(ValidationError(path=path, error_type="repeat_underflow",
                     message=f"{_schema_label(sn)}: expected at least {repeat.min}, got {count}", line=None))
@@ -613,12 +565,13 @@ def _match_ordered_skip(
         si += 1
 
 
-def _match_any_order_strict(
+def _match_any_order(
     flat_schema: list[tuple[NodeSchema, str, int]],
     ast_children: list,
     path: str,
     errors: list[ValidationError],
     expected_level: int,
+    allow_extra: bool,
 ) -> None:
     used_ast = [False] * len(ast_children)
     for sn, sp, slevel in flat_schema:
@@ -657,56 +610,12 @@ def _match_any_order_strict(
                     line=None,
                 ))
 
-    for ai, ast_node in enumerate(ast_children):
-        if not used_ast[ai]:
-            errors.append(ValidationError(
-                path=f"{path} > {_get_section_display(ast_node)}",
-                error_type="unexpected_element",
-                message=f"unexpected {_ast_type_name(ast_node)}",
-                line=getattr(ast_node, "line", None),
-            ))
-
-
-def _match_any_order_skip(
-    flat_schema: list[tuple[NodeSchema, str, int]],
-    ast_children: list,
-    path: str,
-    errors: list[ValidationError],
-    expected_level: int,
-) -> None:
-    used_ast = [False] * len(ast_children)
-    for sn, sp, slevel in flat_schema:
-        repeat = getattr(sn, "repeat", None)
-        if repeat is not None:
-            count = 0
-            for ai, ast_node in enumerate(ast_children):
-                if used_ast[ai]:
-                    continue
-                probe: list[ValidationError] = []
-                if _try_match_one(sn, ast_node, path, probe, slevel):
-                    errors.extend(probe)
-                    used_ast[ai] = True
-                    count += 1
-                    if repeat.max is not None and count >= repeat.max:
-                        break
-            if count < repeat.min:
-                errors.append(ValidationError(path=path, error_type="repeat_underflow",
-                    message=f"{_schema_label(sn)}: expected at least {repeat.min}, got {count}", line=None))
-        else:
-            found = False
-            for ai, ast_node in enumerate(ast_children):
-                if used_ast[ai]:
-                    continue
-                probe: list[ValidationError] = []
-                if _try_match_one(sn, ast_node, path, probe, slevel):
-                    errors.extend(probe)
-                    used_ast[ai] = True
-                    found = True
-                    break
-            if not found and getattr(sn, "required", True):
+    if not allow_extra:
+        for ai, ast_node in enumerate(ast_children):
+            if not used_ast[ai]:
                 errors.append(ValidationError(
-                    path=f"{path} > {_schema_label(sn)}",
-                    error_type="missing_element",
-                    message="missing required element",
-                    line=None,
+                    path=f"{path} > {_get_section_display(ast_node)}",
+                    error_type="unexpected_element",
+                    message=f"unexpected {_ast_type_name(ast_node)}",
+                    line=getattr(ast_node, "line", None),
                 ))

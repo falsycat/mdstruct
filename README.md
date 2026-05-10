@@ -15,7 +15,7 @@ Define the structure of a Markdown document as a YAML schema, then **validate** 
 ## Installation
 
 ```bash
-pip install mdstruct
+pip install git+https://github.com/falsycat/mdstruct
 ```
 
 Requires Python 3.11+.

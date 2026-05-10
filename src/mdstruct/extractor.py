@@ -5,13 +5,12 @@ import re
 from typing import Any
 
 from .md_parser import (
-    BlockquoteNode, CodeNode, DocumentNode, ListNode, SectionNode,
+    AstNode, BlockquoteNode, CodeNode, DocumentNode, ListNode, SectionNode,
     TableNode, TextNode, ThematicBreakNode,
 )
 from .schema.models import (
     BlockquoteNode as SchBlockquote,
     CodeNode as SchCode,
-    FrontmatterSchema,
     GroupNode as SchGroup,
     ListNode as SchList,
     NodeSchema,
@@ -24,10 +23,9 @@ from .schema.models import (
     TextNode as SchText,
     ThematicBreakNode as SchThematicBreak,
     TitleMatch,
+    resolve_pattern,
 )
 from .validator import validate
-
-AstNode = SectionNode | TextNode | ListNode | TableNode | CodeNode | BlockquoteNode | ThematicBreakNode
 
 
 class ExtractionError(Exception):
@@ -226,18 +224,11 @@ def _title_matches(title_spec: str | TitleMatch, ast_node: AstNode) -> bool:
         return False
     if isinstance(title_spec, str):
         return ast_node.title == title_spec
-    spec = _resolve_pattern(title_spec.pattern)
+    spec = resolve_pattern(title_spec.pattern)
     if spec is not None and spec.regex is not None:
         return bool(re.fullmatch(spec.regex, ast_node.title))
     return True
 
-
-def _resolve_pattern(pattern: PatternField | None) -> PatternSpec | None:
-    if pattern is None:
-        return None
-    if isinstance(pattern, str):
-        return PatternSpec(regex=pattern)
-    return pattern
 
 
 def _extract_one(schema_node: NodeSchema, ast_node: AstNode, expected_level: int) -> Any:
@@ -265,7 +256,7 @@ def _extract_section(schema: SchSection, ast_node: AstNode, expected_level: int)
     # title capture
     if isinstance(schema.title, TitleMatch) and schema.title.capture:
         cap = schema.title.capture
-        spec = _resolve_pattern(schema.title.pattern)
+        spec = resolve_pattern(schema.title.pattern)
         out[cap] = _extract_title_capture(spec, ast_node.title, schema.title.capture)
     _extract_children(schema.children, ast_node.children, out, expected_level + 1)
     return out
@@ -308,7 +299,7 @@ def _extract_blockquote(schema: SchBlockquote, ast_node: AstNode) -> Any:
 
 
 def _extract_by_pattern(pattern: PatternField | None, text: str) -> Any:
-    spec = _resolve_pattern(pattern)
+    spec = resolve_pattern(pattern)
     if spec is None:
         return text
     if spec.regex is None:

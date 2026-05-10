@@ -18,7 +18,7 @@ def cli() -> None:
     pass
 
 
-@cli.command()
+@cli.command("validate")
 @click.argument("schema_path")
 @click.argument("document_path")
 @click.option("--format", "fmt", default="text", type=click.Choice(["text", "json"]))
@@ -45,7 +45,7 @@ def validate_cmd(schema_path: str, document_path: str, fmt: str) -> None:
     sys.exit(1 if errors else 0)
 
 
-@cli.command()
+@cli.command("extract")
 @click.argument("schema_path")
 @click.argument("document_path")
 @click.option("--format", "fmt", default="yaml", type=click.Choice(["yaml", "json"]))
@@ -63,6 +63,3 @@ def extract_cmd(schema_path: str, document_path: str, fmt: str) -> None:
     else:
         click.echo(yaml.dump(data, allow_unicode=True, sort_keys=False))
 
-
-cli.add_command(validate_cmd, name="validate")
-cli.add_command(extract_cmd, name="extract")

@@ -72,6 +72,9 @@ class DocumentNode:
     children: list[SectionNode | ContentNode] = field(default_factory=list)
 
 
+AstNode = SectionNode | ContentNode
+
+
 _FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---\r?\n", re.DOTALL)
 _THEMATIC_RAW_RE = re.compile(r"^[-*_]{3,}\s*$")
 

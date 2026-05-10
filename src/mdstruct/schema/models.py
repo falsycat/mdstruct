@@ -188,3 +188,11 @@ class RootSchema(BaseModel):
 class Schema(BaseModel):
     version: str
     root: RootSchema
+
+
+def resolve_pattern(pattern: PatternField | None) -> PatternSpec | None:
+    if pattern is None:
+        return None
+    if isinstance(pattern, str):
+        return PatternSpec(regex=pattern)
+    return pattern
