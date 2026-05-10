@@ -20,7 +20,9 @@ root:
 | `version`     | string | yes      | Schema version (`"1.0"`)                |
 | `root`        | object | yes      | Root document descriptor                |
 | `root.frontmatter` | object | no  | YAML front matter schema (see below)    |
-| `root.children`    | list   | yes | Ordered list of top-level schema nodes  |
+| `root.children`    | list   | no  | Ordered list of top-level schema nodes (may be empty; defaults to `[]`) |
+
+`root.children` uses **strict sequential matching** (`ordered=true, allow_extra=false`) and this cannot be changed. To use flexible matching at the top level, wrap all top-level nodes in a single `group` with the desired `ordered`/`allow_extra` settings.
 
 ---
 
@@ -34,7 +36,6 @@ Each node in `children` (including nested `children`) has a `type` field:
 | `group`        | A logical container — no Markdown element  | dict (named) or flat into parent     |
 | `text`         | Paragraph block                            | `str`, `tuple`, or `dict`            |
 | `list`         | Bullet or numbered list                    | `list[str \| tuple \| dict]`         |
-| `task_list`    | Task list (`- [ ]` / `- [x]`)              | `list[{text, checked}]`              |
 | `table`        | Markdown table                             | `list[dict]`                         |
 | `code`         | Fenced or indented code block              | `{language, content}`                |
 | `blockquote`   | Block quote (`>`)                          | `str`, `tuple`, or `dict`            |
@@ -49,8 +50,8 @@ These parameters apply to every node type unless noted otherwise.
 | Parameter  | Type   | Default | Description                                                  |
 |------------|--------|---------|--------------------------------------------------------------|
 | `name`     | string | null    | Key name in the extracted output. Omit to discard. Required when `repeat` is set. |
-| `required` | bool   | `true`  | Whether a missing element is a validation error.            |
-| `repeat`   | object | null    | Allow the node to appear multiple times (see below).        |
+| `required` | bool   | `true`  | Whether a missing element is a validation error. Cannot be used together with `repeat`. |
+| `repeat`   | object | null    | Allow the node to appear multiple times (see below). Cannot be used together with `required`. |
 
 ### `repeat`
 
@@ -60,7 +61,7 @@ repeat:
   max: null   # maximum occurrences; null = unlimited
 ```
 
-When `repeat` is set, the extracted value becomes a **list** instead of a single item. `name` is required on any repeating node; omitting it is a schema error.
+When `repeat` is set, the extracted value becomes a **list** instead of a single item. `name` is required on any repeating node; omitting it is a schema error. `required` and `repeat` are mutually exclusive; use `repeat.min` to enforce a minimum occurrence count.
 
 ---
 
@@ -96,22 +97,30 @@ Matches a Markdown heading. The heading level is inferred from nesting depth: se
 title: "Exact Title"           # literal string match
 
 title:
-  pattern: 'Chapter \d+'       # regex match against heading text
+  pattern: 'Chapter \d+'       # regex match — string shorthand
   capture: chapter_title       # key name for the extracted value (see below)
+
+title:
+  pattern:                     # object form — supports type coercion
+    regex: 'v(\d+)\.(\d+)'
+    types: [int, int]
+  capture: version
 ```
+
+`title.pattern` accepts the same **string shorthand** or **object form** (`{regex, types}`) as `pattern` fields on other node types (see [Pattern capture groups and type coercion](#pattern-capture-groups-and-type-coercion)).
 
 The value stored under `capture` follows the same capture group rules as `pattern` elsewhere:
 
 | `pattern` form          | Value stored under `capture`                  |
 |-------------------------|-----------------------------------------------|
-| No capture groups       | Full match string                             |
+| No capture groups       | Full match string (or whole title if no `regex`) |
 | Unnamed groups `(...)`  | `tuple` of group values                       |
 | Named groups `(?P<>…)`  | `dict` of named group values                  |
 
 When `repeat` is used on a section, extracted results are collected into a list under the `name` key (`name` is required; see [Common parameters](#common-parameters)).
 
 ```yaml
-# pattern has no capture groups → capture stores the full match string
+# string shorthand, no capture groups → capture stores the full match string
 # Extracted as: {"chapter_title": "Chapter 1", ...}
 - type: section
   title:
@@ -122,13 +131,26 @@ When `repeat` is used on a section, extracted results are collected into a list 
     min: 0
     max: null
 
-# pattern has a named group → capture stores a dict
+# named group → capture stores a dict
 # Extracted as: {"chapter_title": {"num": "1"}, ...}
 - type: section
   title:
     pattern: 'Chapter (?P<num>\d+)'
     capture: chapter_title
   name: chapters
+  repeat:
+    min: 0
+    max: null
+
+# object form with types — unnamed groups → capture stores a tuple[int, int]
+# Extracted as: {"version": (1, 2), ...}
+- type: section
+  title:
+    pattern:
+      regex: 'v(\d+)\.(\d+)'
+      types: [int, int]
+    capture: version
+  name: releases
   repeat:
     min: 0
     max: null
@@ -160,21 +182,21 @@ A logical container that controls matching flexibility for a set of child nodes.
 
 | Parameter     | Type         | Default | Description                                               |
 |---------------|--------------|---------|-----------------------------------------------------------|
-| `name`        | string       | null    | Extracted key. If omitted, children are merged into parent scope. |
+| `name`        | string       | null    | Extracted key. If omitted, children are merged into parent scope. Any `name` collision in the merged scope (with a sibling or another unnamed group's child) is a schema error. |
 | `required`    | bool         | `true`  | Whether at least one match is required.                   |
 | `ordered`     | bool         | `true`  | Children must appear in schema-defined order.             |
 | `allow_extra` | bool         | `false` | Unknown elements between children are silently skipped.   |
 | `repeat`      | object       | null    | Allow the group to repeat.                                |
-| `children`    | list         | —       | Child schema nodes, each with their own `required`.       |
+| `children`    | list         | `[]`    | Child schema nodes, each with their own `required`.       |
 
 ### `ordered` × `allow_extra` behaviour
 
-| `ordered` | `allow_extra` | Matching behaviour                                                      |
-|-----------|---------------|-------------------------------------------------------------------------|
-| `true`    | `false`       | Strict sequential match. Extra elements cause an error. **(default)**  |
-| `true`    | `true`        | Children must appear in order, but unknown elements may appear between them. |
-| `false`   | `false`       | All schema elements must be present, in any order, with no extras.      |
-| `false`   | `true`        | Required elements must appear somewhere; order and extras are ignored.  |
+| `ordered` | `allow_extra` | Matching behaviour                                                                                                                          |
+|-----------|---------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `true`    | `false`       | Strict 1-to-1 sequential match. Extra elements cause an error. **(default)**                                                                |
+| `true`    | `true`        | Schema children form a queue; doc nodes are scanned left to right; unrecognised nodes are skipped; remaining required schema nodes → error. |
+| `false`   | `false`       | All schema children must be present in any order, with no extra doc elements allowed. Unmatched doc nodes → error; missing required schema children → error. |
+| `false`   | `true`        | For each schema child, scan all doc nodes for a first match; required + not found → error.                                                  |
 
 ---
 
@@ -218,12 +240,12 @@ Matches a bullet (`-`, `*`, `+`) or numbered (`1.`) list.
           pattern: '.+'
 ```
 
-| Parameter      | Type    | Default | Description                                               |
-|----------------|---------|---------|-----------------------------------------------------------|
-| `numbered`     | bool    | null    | `true` = numbered list, `false` = bullet, `null` = either |
-| `item`         | object  | null    | Optional item schema.                                     |
-| `item.pattern` | string  | null    | Regex matched against each item's plain text.             |
-| `item.children`| list    | null    | Schema for nested lists under each item.                  |
+| Parameter      | Type             | Default | Description                                               |
+|----------------|------------------|---------|-----------------------------------------------------------|
+| `numbered`     | bool             | null    | `true` = numbered list, `false` = bullet, `null` = either |
+| `item`         | object           | `{}`    | Item schema (empty by default — no pattern, no children). |
+| `item.pattern` | string or object | null    | Regex (or [pattern object with `types`](#pattern-capture-groups-and-type-coercion)) matched against each item's plain text. |
+| `item.children`| list             | `[]`    | Schema for nested lists under each item.                  |
 
 ### Nested lists
 
@@ -231,49 +253,11 @@ When `item.children` is present, each item is extracted as a **dict**:
 
 | Field            | Content                                                          |
 |------------------|------------------------------------------------------------------|
-| `_text`          | Raw item text (always present)                                   |
 | `<group_name>`   | Named capture groups from `pattern`, merged into the dict        |
 | `_groups`        | Unnamed capture groups as a tuple (only when no named groups)    |
 | `<child.name>`   | Extracted value for each named child node in `item.children`     |
 
 When `item.children` is absent, the extraction type follows the [capture group rules](#pattern-capture-groups-and-type-coercion).
-
----
-
-## `task_list`
-
-Matches a GFM task list (items starting with `[ ]` or `[x]`).
-
-```yaml
-- type: task_list
-  name: todos
-  required: false
-  item:
-    pattern: '.+'
-    children:       # optional nested list schema
-      - type: list
-        name: subitems
-        required: false
-        item:
-          pattern: '.+'
-```
-
-| Parameter       | Type   | Default | Description                                                 |
-|-----------------|--------|---------|-------------------------------------------------------------|
-| `item`          | object | null    | Optional item schema.                                       |
-| `item.pattern`  | string | null    | Regex matched against each item's plain text.               |
-| `item.children` | list   | null    | Schema for nested lists under each item (same as `list`).   |
-
-Each item is always extracted as `{"text": str, "checked": bool}`.
-
-When `item.children` is present, each item is extracted as a **dict** instead:
-
-| Field            | Content                                                          |
-|------------------|------------------------------------------------------------------|
-| `_text`          | Raw item text (always present)                                   |
-| `<group_name>`   | Named capture groups from `pattern`, merged into the dict        |
-| `_groups`        | Unnamed capture groups as a tuple (only when no named groups)    |
-| `<child.name>`   | Extracted value for each named child node in `item.children`     |
 
 ---
 
@@ -430,8 +414,10 @@ Supported type names:
 | `str`   | `str`       | Default. No-op.                                |
 | `int`   | `int`       | `int(value)`                                   |
 | `float` | `float`     | `float(value)`                                 |
-| `bool`  | `bool`      | Case-insensitive. `true`/`yes`/`y`/`t`/`1` → `True`; `false`/`no`/`n`/`f`/`0` → `False` |
-| `json`  | any         | `json.loads(value)`                            |
+| `bool`  | `bool`      | Case-insensitive. `true`/`yes`/`y`/`t`/`1` → `True`; `false`/`no`/`n`/`f`/`0` → `False`; any other value → `type_coercion_error`. Accepted strings are broader than standard YAML boolean literals; mdstruct always operates on the raw Markdown text, not on any YAML-parsed value. |
+| `json`  | any         | `json.loads(value)`; invalid JSON → validation error |
+
+If type coercion fails for any reason, a `type_coercion_error` validation error is recorded for that element and extraction does not proceed for it.
 
 ### Examples
 
@@ -509,7 +495,8 @@ Given the schema below and a matching document, `extract()` returns:
   # repeat section → list of dicts
   "chapters": [
     {
-      "chapter_title": "Chapter 1",   # from title.capture
+      "chapter_title": "Chapter 1",   # title.pattern has no capture groups → str
+                                       # (named groups would yield a dict; see Title matching)
 
       # named group → dict for each table column
       "results": [
@@ -528,19 +515,12 @@ Given the schema below and a matching document, `extract()` returns:
       # nested list (item.children present) → list[dict]
       "entries": [
         {
-          "_text": "Alice",
           "name": "Alice",
           "scores": [
             {"label": "math", "value": "90"},
             {"label": "english", "value": "85"},
           ],
         },
-      ],
-
-      # task_list → list[{text, checked}]
-      "tasks": [
-        {"text": "Do something", "checked": True},
-        {"text": "Do another",   "checked": False},
       ],
 
       # named group → dict

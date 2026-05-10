@@ -9,10 +9,8 @@ Define the structure of a Markdown document as a YAML schema, then **validate** 
 - **Flexible matching** — control whether children must appear in order, whether extra elements are allowed, and whether sections may repeat.
 - **Regex patterns with capture groups** — validate content with regular expressions and extract named or positional capture groups directly into the output.
 - **Nested lists** — describe arbitrarily deep list structures in the schema.
-- **All common Markdown elements** — sections, paragraphs, bullet and numbered lists, task lists, tables, code blocks, block quotes, horizontal rules, and YAML front matter.
+- **All common Markdown elements** — sections, paragraphs, bullet and numbered lists, tables, code blocks, block quotes, horizontal rules, and YAML front matter.
 - **Python library + CLI** — use programmatically or from the terminal.
-
----
 
 ## Installation
 
@@ -21,8 +19,6 @@ pip install mdstruct
 ```
 
 Requires Python 3.11+.
-
----
 
 ## Quick start
 
@@ -79,7 +75,7 @@ mdstruct validate schema.yaml document.md
 ```
 
 ```
-ERROR  root > Section[Overview] (line 3): missing required element
+ERROR  root > section[Overview] (line 3): missing required element
 Total: 1 error(s)
 ```
 
@@ -92,7 +88,7 @@ mdstruct extract schema.yaml document.md
 ```
 
 ```yaml
-author: Alice
+overview: This is the overview.
 chapters:
   - chapter_title:
       num: "1"
@@ -104,21 +100,19 @@ chapters:
 
 Use `--format json` for JSON output.
 
----
-
 ## CLI reference
 
-```text
+```
 mdstruct validate <schema> <document> [--format text|json]
 mdstruct extract  <schema> <document> [--format yaml|json]
 ```
 
-| Command    | Option     | Default  | Description         |
-|------------|------------|----------|---------------------|
-| `validate` | `--format` | `text`   | `text` or `json`    |
-| `extract`  | `--format` | `yaml`   | `yaml` or `json`    |
+| Command    | Option     | Default | Description      |
+|------------|------------|---------|------------------|
+| `validate` | `--format` | `text`  | `text` or `json` |
+| `extract`  | `--format` | `yaml`  | `yaml` or `json` |
 
----
+**Exit codes:** `validate` returns `0` on success, `1` when errors are found. `extract` returns `0` on success, `1` if the document does not conform to the schema — no detail is shown; run `validate` first to see errors.
 
 ## Python API
 
@@ -138,20 +132,17 @@ errors = validate(schema, doc)
 for err in errors:
     print(f"{err.path} (line {err.line}): {err.message}")
 
-# Extraction
-data = extract(schema, doc)
-print(data["overview"])
-print(data["chapters"][0]["data"])
+# Always validate before extracting; extract() raises ExtractionError on invalid documents
+if not errors:
+    data = extract(schema, doc)
+    print(data["overview"])
+    print(data["chapters"][0]["data"])
 ```
-
----
 
 ## Documentation
 
 - [Schema syntax reference](doc/syntax.md) — all node types, parameters, pattern/type coercion, and extraction output format
 - [Architecture](doc/arch.md) — internal design, AST, validation algorithm, and module structure
-
----
 
 ## Development
 
