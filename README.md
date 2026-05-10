@@ -68,7 +68,27 @@ root:
               pattern: '\d+'
 ```
 
-### 2. Validate a document
+### 2. Write a document
+
+```markdown
+---
+author: Jane Doe
+---
+
+## Overview
+
+This is the overview.
+
+## Chapter 1
+
+This chapter covers the basics.
+
+| Name  | Value |
+|-------|-------|
+| Alpha | 42    |
+```
+
+### 3. Validate a document
 
 ```bash
 mdstruct validate schema.yaml document.md
@@ -81,7 +101,7 @@ Total: 1 error(s)
 
 Exit code is `0` on success, `1` when errors are found.
 
-### 3. Extract data
+### 4. Extract data
 
 ```bash
 mdstruct extract schema.yaml document.md
